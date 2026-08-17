@@ -3,6 +3,7 @@ import { createReadStream, existsSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 import { parse } from 'csv-parse';
 import { Pool } from 'pg';
+import { createPgPoolConfig } from '../database/pg-options';
 
 type CsvRecord = Record<string, string | undefined>;
 
@@ -20,7 +21,7 @@ if (!databaseUrl) {
   throw new Error('DATABASE_URL is required. Example: DATABASE_URL=postgres://... npm run import:results');
 }
 
-const pool = new Pool({ connectionString: databaseUrl });
+const pool = new Pool(createPgPoolConfig(databaseUrl));
 
 async function main() {
   const runId = makeRunId(modelWorkspace);

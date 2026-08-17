@@ -1,0 +1,15 @@
+node_modules
+dist
+coverage
+.git
+.env
+.env.*
+!.env.example
+fault_run
+fault_run_check
+chemical_process_timeseries.csv
+__pycache__
+*.pyc
+*.log
+.DS_Store
+docs
