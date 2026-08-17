@@ -22,6 +22,7 @@ async function bootstrap() {
     .setVersion('0.1.0')
     .addTag('health', 'Server health check')
     .addTag('dashboard', 'Dashboard summaries and model result APIs')
+    .addTag('esg', 'Estimated energy savings and ESG conversion APIs')
     .build();
   const swaggerDocument = SwaggerModule.createDocument(app, swaggerConfig);
   SwaggerModule.setup('api-docs', app, swaggerDocument, {

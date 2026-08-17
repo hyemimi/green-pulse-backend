@@ -59,6 +59,7 @@ async function main() {
   await importFaultEvents(runId, readingIndex);
   await importEpisodeResults(runId);
   await importRunMetrics(runId);
+  await importEsgEnergySavings(runId);
   await rebuildMonthlySummaries(runId);
   await finalizeRun(runId);
 
@@ -311,6 +312,95 @@ async function importRunMetrics(runId: string) {
     runId,
     'integration',
     resolve(modelWorkspace, 'integrated_specialists_v1_outputs/integrated_overall_summary.csv'),
+  );
+}
+
+async function importEsgEnergySavings(runId: string) {
+  const filePath = resolve(modelWorkspace, 'esg/energy_savings.csv');
+  if (!existsSync(filePath)) {
+    console.warn(`[IMPORT] ESG energy savings skipped: ${filePath}`);
+    return;
+  }
+
+  console.log('[IMPORT] esg_energy_savings');
+  const batch: unknown[][] = [];
+  let count = 0;
+
+  for await (const row of readCsv(filePath)) {
+    const energySavedKwh = Number(required(row, 'energy_saved_kwh'));
+    if (!Number.isFinite(energySavedKwh) || energySavedKwh < 0) {
+      throw new Error(`energy_saved_kwh must be a non-negative number: ${row.energy_saved_kwh}`);
+    }
+
+    batch.push([
+      runId,
+      required(row, 'timestamp'),
+      required(row, 'reactor_id'),
+      Number(required(row, 'fault_type')),
+      nullableInteger(row.episode_id),
+      nullableNumber(row.baseline_sty),
+      nullableNumber(row.actual_sty),
+      nullableNumber(row.baseline_power_kw),
+      nullableNumber(row.actual_power_kw),
+      energySavedKwh,
+      required(row, 'calculation_method'),
+      required(row, 'calculation_version'),
+    ]);
+
+    if (batch.length >= 1000) {
+      await insertEsgEnergySavingBatch(batch);
+      count += batch.length;
+      batch.length = 0;
+    }
+  }
+
+  if (batch.length > 0) {
+    await insertEsgEnergySavingBatch(batch);
+    count += batch.length;
+  }
+
+  console.log(`[IMPORT] esg_energy_savings rows=${count}`);
+}
+
+async function insertEsgEnergySavingBatch(rows: unknown[][]) {
+  const columnsPerRow = 12;
+  const values = rows.flat();
+  const placeholders = rows
+    .map((_, rowIndex) => {
+      const offset = rowIndex * columnsPerRow;
+      return `(${Array.from({ length: columnsPerRow }, (_value, colIndex) => `$${offset + colIndex + 1}`).join(', ')})`;
+    })
+    .join(', ');
+
+  await pool.query(
+    `
+      INSERT INTO esg_energy_savings (
+        run_id,
+        timestamp,
+        reactor_id,
+        fault_type,
+        episode_id,
+        baseline_sty,
+        actual_sty,
+        baseline_power_kw,
+        actual_power_kw,
+        energy_saved_kwh,
+        calculation_method,
+        calculation_version
+      )
+      VALUES ${placeholders}
+      ON CONFLICT (run_id, reactor_id, timestamp, fault_type)
+      DO UPDATE SET
+        episode_id = EXCLUDED.episode_id,
+        baseline_sty = EXCLUDED.baseline_sty,
+        actual_sty = EXCLUDED.actual_sty,
+        baseline_power_kw = EXCLUDED.baseline_power_kw,
+        actual_power_kw = EXCLUDED.actual_power_kw,
+        energy_saved_kwh = EXCLUDED.energy_saved_kwh,
+        calculation_method = EXCLUDED.calculation_method,
+        calculation_version = EXCLUDED.calculation_version
+    `,
+    values,
   );
 }
 
