@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: green-pulse-backend
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: CORS_ORIGIN
+        sync: false
+      - key: DATABASE_SSL
+        value: "true"

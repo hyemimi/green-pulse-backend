@@ -1,6 +1,7 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Pool, QueryResultRow } from 'pg';
+import { createPgPoolConfig } from './pg-options';
 
 @Injectable()
 export class DatabaseService implements OnModuleDestroy {
@@ -16,7 +17,7 @@ export class DatabaseService implements OnModuleDestroy {
     // pg Pool을 직접 쓰는 이유:
     // 이 프로젝트는 복잡한 도메인 쓰기보다 CSV/모델 결과 적재와 읽기 API가 중심입니다.
     // ORM을 크게 얹기보다 SQL을 명시해두는 편이 데이터 흐름을 설명하기 쉽습니다.
-    this.pool = new Pool({ connectionString });
+    this.pool = new Pool(createPgPoolConfig(connectionString));
   }
 
   async query<T extends QueryResultRow = QueryResultRow>(text: string, params: unknown[] = []) {
