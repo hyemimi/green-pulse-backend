@@ -62,19 +62,19 @@ export class DashboardService {
         `,
         [resolvedRunId],
       ),
-      this.db.query(
-        `
-          SELECT
-            COALESCE(SUM(reading_count), 0)::int AS "readingCount",
-            COALESCE(SUM(fault_reading_count), 0)::int AS "faultReadingCount",
-            COALESCE(SUM(normal_reading_count), 0)::int AS "normalReadingCount",
-            COUNT(DISTINCT month)::int AS "monthCount",
-            COUNT(DISTINCT reactor_id)::int AS "reactorCount"
-          FROM monthly_summaries
-          WHERE run_id = $1
-        `,
-        [resolvedRunId],
-      ),
+  this.db.query(
+  `
+    SELECT
+      COALESCE(SUM(reading_count) FILTER (WHERE reactor_id IS NULL), 0)::int AS "readingCount",
+      COALESCE(SUM(fault_reading_count) FILTER (WHERE reactor_id IS NULL), 0)::int AS "faultReadingCount",
+      COALESCE(SUM(normal_reading_count) FILTER (WHERE reactor_id IS NULL), 0)::int AS "normalReadingCount",
+      COUNT(DISTINCT month)::int AS "monthCount",
+      COUNT(DISTINCT reactor_id)::int AS "reactorCount"
+    FROM monthly_summaries
+    WHERE run_id = $1
+  `,
+  [resolvedRunId],
+),
       this.db.query(
         `
           SELECT
@@ -269,6 +269,121 @@ export class DashboardService {
     );
 
     return rows;
+  }
+
+  async getReadings(query: {
+  reactorId?: string;
+  from?: string;
+  to?: string;
+  faultType?: number;
+  limit: number;
+}) {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (query.reactorId) {
+    params.push(query.reactorId);
+    conditions.push(`reactor_id = $${params.length}`);
+  }
+
+  if (query.from) {
+    params.push(query.from);
+    conditions.push(`timestamp >= $${params.length}`);
+  }
+
+  if (query.to) {
+    params.push(query.to);
+    conditions.push(`timestamp <= $${params.length}`);
+  }
+
+  if (query.faultType !== undefined) {
+    params.push(query.faultType);
+    conditions.push(`fault_type = $${params.length}`);
+  }
+
+  params.push(Math.min(Math.max(query.limit || 1000, 1), 10000));
+  const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  const { rows } = await this.db.query(
+    `
+      SELECT
+        timestamp,
+        reactor_id AS "reactorId",
+        reactor_temp AS "reactorTemp",
+        reactor_pressure AS "reactorPressure",
+        feed_flow_rate AS "feedFlowRate",
+        coolant_flow_rate AS "coolantFlowRate",
+        agitator_speed_rpm AS "agitatorSpeedRpm",
+        vibration_rms AS "vibrationRms",
+        motor_current AS "motorCurrent",
+        power_consumption_kw AS "powerConsumptionKw",
+        fault_type AS "faultType",
+        efficiency_loss_pct AS "efficiencyLossPct"
+      FROM reactor_readings
+      ${whereClause}
+      ORDER BY timestamp
+      LIMIT $${params.length}
+    `,
+    params,
+  );
+
+  return rows;
+}
+
+  async getReactorStatus(runId?: string, holdMin = 0, windowHours = 24) {
+    const resolvedRunId = await this.resolveRunId(runId);
+
+    // 이 데이터는 실시간이 아니라 배치 데이터라서 "지금"이 없습니다.
+    // 데이터상 가장 최근 이벤트 시각을 기준점으로 삼아 최근 windowHours 이내 이벤트를 "활성"으로 봅니다.
+    const latestResult = await this.db.query<{ latest: string | null }>(
+      `SELECT MAX(event_time) AS latest FROM fault_events WHERE run_id = $1 AND hold_min = $2`,
+      [resolvedRunId, holdMin],
+    );
+
+    const asOf = latestResult.rows[0]?.latest ?? null;
+    const since = asOf ? new Date(new Date(asOf).getTime() - windowHours * 60 * 60 * 1000).toISOString() : null;
+
+    const { rows } = await this.db.query<{
+      reactorId: string;
+      activeAlertCount: number;
+      lastEventTime: string | null;
+    }>(
+      `
+        WITH reactors AS (
+          SELECT DISTINCT reactor_id
+          FROM monthly_summaries
+          WHERE run_id = $1 AND reactor_id IS NOT NULL
+        ),
+        recent_events AS (
+          SELECT reactor_id, COUNT(*)::int AS alert_count, MAX(event_time) AS last_event_time
+          FROM fault_events
+          WHERE run_id = $1 AND hold_min = $2 AND event_time >= $3
+          GROUP BY reactor_id
+        )
+        SELECT
+          r.reactor_id AS "reactorId",
+          COALESCE(e.alert_count, 0)::int AS "activeAlertCount",
+          e.last_event_time AS "lastEventTime"
+        FROM reactors r
+        LEFT JOIN recent_events e ON e.reactor_id = r.reactor_id
+        ORDER BY r.reactor_id
+      `,
+      [resolvedRunId, holdMin, since],
+    );
+
+    const reactors = rows.map((row) => ({
+      ...row,
+      status: row.activeAlertCount > 0 ? 'CAUTION' : 'OK',
+    }));
+
+    return {
+      asOf,
+      windowHours,
+      reactorCount: reactors.length,
+      reactorsAtRisk: reactors.filter((r) => r.status === 'CAUTION').length,
+      activeAlertCount: reactors.reduce((sum, r) => sum + r.activeAlertCount, 0),
+      reactors,
+    };
   }
 
   private async resolveRunId(runId?: string) {
