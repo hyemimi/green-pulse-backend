@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+coverage/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Model/data outputs
+fault_run/
+fault_run_check/
+*.log
+
+# Large local source data
+chemical_process_timeseries.csv
+
+# OS/editor files
+.DS_Store
+.idea/
+.vscode/
+
+# Temporary files
+tmp/
+temp/
