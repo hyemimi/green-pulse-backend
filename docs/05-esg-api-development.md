@@ -94,10 +94,10 @@ export MODEL_WORKSPACE="./fault_run"
 ```
 
 ```bash
-npm run db:migrate
+npm run db:migrate:node
 ```
 
-위 명령은 기존 테이블과 `esg_energy_savings` 테이블을 함께 생성합니다.
+위 명령은 `dev` 브랜치의 Neon 연결 방식을 사용해 기존 테이블과 `esg_energy_savings` 테이블을 함께 생성합니다.
 
 Python 결과가 없는 상태에서도 기존 모델 결과는 정상적으로 적재됩니다. ESG CSV가 없으면 경고만 출력하고 ESG 적재를 건너뜁니다.
 
