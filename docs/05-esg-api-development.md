@@ -7,7 +7,7 @@
 ## 1. 전체 흐름
 
 ```text
-chemical_process_timeseries.csv
+chemical_process_timeseries_physics.csv
   -> scripts/calculate_esg_energy.py
   -> fault_run/esg/energy_savings.csv
   -> npm run import:results
@@ -35,10 +35,20 @@ Python은 행별 `energy_saved_kwh`를 계산합니다. NestJS는 그 값을 다
 
 ```bash
 python3 scripts/calculate_esg_energy.py \
-  --input chemical_process_timeseries.csv \
   --output fault_run/esg/energy_savings.csv \
   --version sty-v1
 ```
+
+스크립트는 기본적으로 `chemical_process_timeseries_physics.csv`를 사용합니다. 현재 작업공간처럼 백엔드 저장소와 데이터 저장소가 나란히 있으면 첨부된 파일을 자동으로 찾습니다.
+
+다른 위치에서 실행할 때는 환경변수나 `--input`으로 경로를 지정합니다.
+
+```powershell
+$env:PHYSICS_DATASET_PATH="C:\data\chemical_process_timeseries_physics.csv"
+python scripts/calculate_esg_energy.py --version sty-v1
+```
+
+`space_time_yield`는 새 CSV에 이미 계산되어 있으므로 Python ESG 계산에서는 이 컬럼을 입력값으로 사용합니다.
 
 현재는 계산식 미확정 상태이므로 실행하면 `NotImplementedError`가 발생합니다. 이것은 미완성 계산 결과가 DB에 들어가는 것을 막기 위한 장치입니다.
 

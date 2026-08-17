@@ -8,6 +8,7 @@ placeholder savings so demo values cannot be mistaken for measured results.
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -20,7 +21,26 @@ REQUIRED_INPUT_COLUMNS = {
     "feed_flow_rate",
     "motor_current",
     "power_consumption_kw",
+    "space_time_yield",
 }
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def default_physics_input() -> Path:
+    """Find the physics-enhanced dataset without hard-coding a user directory."""
+
+    configured_path = os.getenv("PHYSICS_DATASET_PATH")
+    if configured_path:
+        return Path(configured_path).expanduser()
+
+    candidates = [
+        PROJECT_ROOT / "chemical_process_timeseries_physics.csv",
+        PROJECT_ROOT.parent
+        / "green-pulse-backend-fault-detection-dev"
+        / "chemical_process_timeseries_physics.csv",
+    ]
+    return next((path for path in candidates if path.exists()), candidates[0])
 
 
 def calculate_energy_saved_kwh(fault_rows: pd.DataFrame) -> pd.Series:
@@ -76,7 +96,12 @@ def build_output(source: pd.DataFrame, calculation_method: str, calculation_vers
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", required=True, type=Path)
+    parser.add_argument(
+        "--input",
+        default=default_physics_input(),
+        type=Path,
+        help="Physics-enhanced source CSV. Defaults to chemical_process_timeseries_physics.csv.",
+    )
     parser.add_argument("--output", default=Path("fault_run/esg/energy_savings.csv"), type=Path)
     parser.add_argument("--method", default="sty-and-motor-current")
     parser.add_argument("--version", required=True)
