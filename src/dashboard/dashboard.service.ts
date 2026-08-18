@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
 
 type MonthlyQuery = {
@@ -258,6 +258,8 @@ export class DashboardService {
           vibration_rms AS "vibrationRms",
           motor_current AS "motorCurrent",
           power_consumption_kw AS "powerConsumptionKw",
+          temp_setpoint AS "tempSetpoint",
+          pressure_setpoint AS "pressureSetpoint",
           fault_type AS "faultType",
           efficiency_loss_pct AS "efficiencyLossPct"
         FROM reactor_readings
@@ -317,6 +319,8 @@ export class DashboardService {
         vibration_rms AS "vibrationRms",
         motor_current AS "motorCurrent",
         power_consumption_kw AS "powerConsumptionKw",
+        temp_setpoint AS "tempSetpoint",
+        pressure_setpoint AS "pressureSetpoint",
         fault_type AS "faultType",
         efficiency_loss_pct AS "efficiencyLossPct"
       FROM reactor_readings
@@ -330,6 +334,161 @@ export class DashboardService {
   return rows;
 }
 
+async getDetections(runId?: string, holdMin = 0) {
+  const resolvedRunId = await this.resolveRunId(runId);
+
+  const { rows } = await this.db.query<{
+    episodeId: number;
+    reactorId: string;
+    faultRaw: number;
+    detectedAt: string | null;
+    delayMin: number | null;
+    predictedFaultRaw: number | null;
+    specialist: string | null;
+    score: number | null;
+  }>(
+    `
+      SELECT
+        ep.episode_id AS "episodeId",
+        ep.reactor_id AS "reactorId",
+        ep.fault AS "faultRaw",
+        ev.event_time AS "detectedAt",
+        ep.correct_delay_min AS "delayMin",
+        ev.predicted_fault AS "predictedFaultRaw",
+        ev.specialist,
+        ev.score
+      FROM episode_results ep
+      LEFT JOIN fault_events ev
+        ON ev.run_id = ep.run_id
+        AND ev.hold_min = ep.hold_min
+        AND ev.episode_id = ep.episode_id
+        AND ev.predicted_fault = ep.fault
+      WHERE ep.run_id = $1 AND ep.hold_min = $2
+      ORDER BY ev.event_time NULLS LAST, ep.episode_id
+    `,
+    [resolvedRunId, holdMin],
+  );
+
+  const faultLabel = (value: number | null) => {
+    if (value === null || value === undefined) return null;
+    return value === 0 ? 'Normal' : `F${value}`;
+  };
+
+  return rows.map((row) => {
+    const detectedAt = row.detectedAt ? new Date(row.detectedAt) : null;
+    const faultOnset =
+      detectedAt && row.delayMin !== null
+        ? new Date(detectedAt.getTime() - row.delayMin * 60 * 1000).toISOString()
+        : null;
+
+    return {
+      episodeId: row.episodeId,
+      reactorId: row.reactorId,
+      faultType: faultLabel(row.faultRaw),
+      faultOnset,
+      detectedAt: detectedAt ? detectedAt.toISOString() : null,
+      delayMin: row.delayMin,
+      predictedFault: faultLabel(row.predictedFaultRaw),
+      specialist: row.specialist,
+      score: row.score,
+    };
+  });
+}
+async getEpisodeSensorTrend(episodeId: number, runId?: string, holdMin = 0, bufferMin = 15) {
+  const resolvedRunId = await this.resolveRunId(runId);
+
+  const { rows } = await this.db.query<{
+    reactorId: string;
+    detectedAt: string | null;
+    delayMin: number | null;
+  }>(
+    `
+      SELECT
+        ep.reactor_id AS "reactorId",
+        ev.event_time AS "detectedAt",
+        ep.correct_delay_min AS "delayMin"
+      FROM episode_results ep
+      LEFT JOIN fault_events ev
+        ON ev.run_id = ep.run_id
+        AND ev.hold_min = ep.hold_min
+        AND ev.episode_id = ep.episode_id
+        AND ev.predicted_fault = ep.fault
+      WHERE ep.run_id = $1 AND ep.hold_min = $2 AND ep.episode_id = $3
+      LIMIT 1
+    `,
+    [resolvedRunId, holdMin, episodeId],
+  );
+
+  const episode = rows[0];
+  if (!episode || !episode.detectedAt || episode.delayMin === null) {
+    throw new NotFoundException(`Episode ${episodeId} has no detection data for run ${resolvedRunId}`);
+  }
+
+  const detectedAt = new Date(episode.detectedAt);
+  const faultOnset = new Date(detectedAt.getTime() - episode.delayMin * 60 * 1000);
+  const from = new Date(faultOnset.getTime() - bufferMin * 60 * 1000);
+  const to = new Date(detectedAt.getTime() + bufferMin * 60 * 1000);
+
+  const { rows: readingRows } = await this.db.query<{
+    timestamp: string;
+    reactorTemp: number | null;
+    reactorPressure: number | null;
+    feedFlowRate: number | null;
+    vibrationRms: number | null;
+    motorCurrent: number | null;
+    powerConsumptionKw: number | null;
+    tempSetpoint: number | null;
+    pressureSetpoint: number | null;
+    faultTypeRaw: number;
+    efficiencyLossPct: number | null;
+  }>(
+    `
+      SELECT
+        timestamp,
+        reactor_temp AS "reactorTemp",
+        reactor_pressure AS "reactorPressure",
+        feed_flow_rate AS "feedFlowRate",
+        vibration_rms AS "vibrationRms",
+        motor_current AS "motorCurrent",
+        power_consumption_kw AS "powerConsumptionKw",
+        temp_setpoint AS "tempSetpoint",
+        pressure_setpoint AS "pressureSetpoint",
+        fault_type AS "faultTypeRaw",
+        efficiency_loss_pct AS "efficiencyLossPct"
+      FROM reactor_readings
+      WHERE reactor_id = $1 AND timestamp >= $2 AND timestamp <= $3
+      ORDER BY timestamp
+    `,
+    [episode.reactorId, from.toISOString(), to.toISOString()],
+  );
+
+  const faultLabel = (value: number) => (value === 0 ? 'Normal' : `F${value}`);
+
+  const points = readingRows.map((row) => ({
+    timestamp: row.timestamp,
+    time: new Date(row.timestamp).toISOString().slice(11, 16),
+    reactorTemp: row.reactorTemp,
+    reactorPressure: row.reactorPressure,
+    feedFlowRate: row.feedFlowRate,
+    vibrationRms: row.vibrationRms,
+    motorCurrent: row.motorCurrent,
+    powerConsumptionKw: row.powerConsumptionKw,
+    tempSetpoint: row.tempSetpoint,
+    pressureSetpoint: row.pressureSetpoint,
+    faultType: faultLabel(row.faultTypeRaw),
+    efficiencyLossPct: row.efficiencyLossPct,
+  }));
+
+  return {
+    reactorId: episode.reactorId,
+    from: from.toISOString(),
+    to: to.toISOString(),
+    faultOnset: faultOnset.toISOString(),
+    detectedAt: detectedAt.toISOString(),
+    axisLabels: points.map((p) => p.time),
+    points,
+  };
+}
   async getReactorStatus(runId?: string, holdMin = 0, windowHours = 24) {
     const resolvedRunId = await this.resolveRunId(runId);
 

@@ -281,4 +281,52 @@ getReadings(
     limit: Number(limit),
   });
 }
+@Get('detections')
+@ApiOperation({ summary: '에피소드 기반 이상 탐지 알림 목록' })
+@ApiQuery({ name: 'runId', required: false, description: '조회할 모델 실행 ID. 생략하면 최신 run을 사용합니다.' })
+@ApiQuery({ name: 'holdMin', required: false, example: 0, description: 'thermal arbitration hold 값입니다.' })
+@ApiOkResponse({
+  description: '에피소드별 탐지 결과를 프론트 알림 패널 형식에 맞게 반환합니다.',
+  schema: {
+    example: [
+      {
+        episodeId: 17,
+        reactorId: 'A_R2',
+        faultType: 'F1',
+        faultOnset: '2024-03-14T19:06:00.000Z',
+        detectedAt: '2024-03-14T19:08:00.000Z',
+        delayMin: 2,
+        predictedFault: 'F1',
+        specialist: 'thermal_after_hold',
+        score: 1,
+      },
+    ],
+  },
+})
+
+getDetections(@Query('runId') runId?: string, @Query('holdMin') holdMin = '0') {
+  return this.dashboardService.getDetections(runId, Number(holdMin));
+}
+@Get('episodes/:episodeId/sensor-trend')
+@ApiOperation({ summary: '에피소드 기준 센서 트렌드 조회 (전조~탐지 구간 포함)' })
+@ApiParam({ name: 'episodeId', example: 17, description: '조회할 episode ID입니다.' })
+@ApiQuery({ name: 'runId', required: false, description: '조회할 모델 실행 ID. 생략하면 최신 run을 사용합니다.' })
+@ApiQuery({ name: 'holdMin', required: false, example: 0, description: 'thermal arbitration hold 값입니다.' })
+@ApiQuery({ name: 'bufferMin', required: false, example: 15, description: '전조/탐지 시각 앞뒤로 몇 분을 더 보여줄지 설정합니다.' })
+@ApiOkResponse({
+  description: '에피소드의 전조~탐지 구간을 포함한 센서 시계열을 반환합니다.',
+})
+getEpisodeSensorTrend(
+  @Param('episodeId') episodeId: string,
+  @Query('runId') runId?: string,
+  @Query('holdMin') holdMin = '0',
+  @Query('bufferMin') bufferMin = '15',
+) {
+  return this.dashboardService.getEpisodeSensorTrend(
+    Number(episodeId),
+    runId,
+    Number(holdMin),
+    Number(bufferMin),
+  );
+}
 }
