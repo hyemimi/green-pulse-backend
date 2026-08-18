@@ -9,6 +9,7 @@ export type EsgQuery = {
   to?: string;
   reactorId?: string;
   holdMin: number;
+  playbackMinute?: number;
 };
 
 export type PowerSavingQuery = {
@@ -155,6 +156,58 @@ export class EsgService {
     };
   }
 
+  async getReactorLosses(query: EsgQuery) {
+    this.validateEsgQuery(query);
+    const runId = await this.resolveRunId(query.runId);
+    const episodes = await this.getEpisodeSavings(runId, query);
+    const reactorIds = query.reactorId ? [query.reactorId] : await this.getReactorIds();
+
+    const reactors = reactorIds.map((reactorId) => {
+      const reactorEpisodes = episodes.filter((episode) => episode.reactorId === reactorId);
+      const unmitigatedLossKwh = reactorEpisodes.reduce(
+        (sum, episode) => sum + episode.unmitigatedLossKwh,
+        0,
+      );
+      const actualLossUntilDetectionKwh = reactorEpisodes.reduce(
+        (sum, episode) => sum + episode.actualLossUntilDetectionKwh,
+        0,
+      );
+      const avoidableLossKwh = reactorEpisodes.reduce((sum, episode) => sum + episode.savedKwh, 0);
+
+      return {
+        reactorId,
+        episodeCount: reactorEpisodes.length,
+        unmitigatedLossKwh: this.round(unmitigatedLossKwh, 6),
+        actualLossUntilDetectionKwh: this.round(actualLossUntilDetectionKwh, 6),
+        avoidableLossKwh: this.round(avoidableLossKwh, 6),
+        savingRatePct: this.round(
+          unmitigatedLossKwh > 0 ? (avoidableLossKwh / unmitigatedLossKwh) * 100 : 0,
+          2,
+        ),
+      };
+    });
+
+    const maxPlaybackMinute = Math.ceil(
+      Math.max(...episodes.map((episode) => episode.modelDetectMinute), 0),
+    );
+    const playbackMinute = Math.min(query.playbackMinute ?? maxPlaybackMinute, maxPlaybackMinute);
+
+    return {
+      playbackMinute,
+      maxPlaybackMinute,
+      isPlaybackComplete: playbackMinute >= maxPlaybackMinute,
+      totalUnmitigatedLossKwh: this.round(
+        reactors.reduce((sum, reactor) => sum + reactor.unmitigatedLossKwh, 0),
+        6,
+      ),
+      totalAvoidableLossKwh: this.round(
+        reactors.reduce((sum, reactor) => sum + reactor.avoidableLossKwh, 0),
+        6,
+      ),
+      reactors,
+    };
+  }
+
   async getMonthly(query: EsgQuery) {
     this.validateEsgQuery(query);
     const runId = await this.resolveRunId(query.runId);
@@ -205,6 +258,8 @@ export class EsgService {
       params.push(query.reactorId);
       conditions.push(`er.reactor_id = $${params.length}`);
     }
+    params.push(query.playbackMinute ?? null);
+    const playbackMinuteParam = `$${params.length}`;
 
     const { rows } = await this.db.query<EpisodeLossRow>(
       `
@@ -226,12 +281,24 @@ export class EsgService {
           WHERE ${conditions.join(' AND ')}
           ORDER BY er.episode_id, fe.event_time
         )
+        , calculation_windows AS (
+          SELECT
+            d.*,
+            CASE
+              WHEN ${playbackMinuteParam}::double precision IS NULL THEN d.detect_timestamp
+              ELSE LEAST(
+                d.detect_timestamp,
+                d.onset_timestamp + (${playbackMinuteParam}::double precision * INTERVAL '1 minute')
+              )
+            END AS calculation_timestamp
+          FROM correct_detections d
+        )
         SELECT
           d.episode_id AS "episodeId",
           d.reactor_id AS "reactorId",
           d.predicted_fault::int AS "predictedFault",
           d.onset_timestamp AS "onsetTimestamp",
-          d.detect_timestamp AS "detectTimestamp",
+          d.calculation_timestamp AS "detectTimestamp",
           d.correct_delay_min::float AS "detectMinute",
           COALESCE(detection.operating_regime, LEFT(d.reactor_id, 1)) AS "operatingRegime",
           detection.fault_type::int AS "actualFaultAtDetection",
@@ -240,20 +307,21 @@ export class EsgService {
           COALESCE(SUM(
             GREATEST(COALESCE(loss_reading.wasted_power_kw, 0), 0)
           ), 0)::float / 60.0 AS "actualLossUntilDetectionKwh"
-        FROM correct_detections d
+        FROM calculation_windows d
         INNER JOIN economic_power_readings detection
           ON detection.reactor_id = d.reactor_id
-         AND detection.timestamp = d.detect_timestamp
+         AND detection.timestamp = d.calculation_timestamp
         LEFT JOIN economic_power_readings loss_reading
           ON loss_reading.reactor_id = d.reactor_id
          AND loss_reading.timestamp >= d.onset_timestamp
-         AND loss_reading.timestamp < d.detect_timestamp
+         AND loss_reading.timestamp < d.calculation_timestamp
         GROUP BY
           d.episode_id,
           d.reactor_id,
           d.predicted_fault,
           d.onset_timestamp,
           d.detect_timestamp,
+          d.calculation_timestamp,
           d.correct_delay_min,
           detection.operating_regime,
           detection.fault_type,
@@ -265,6 +333,7 @@ export class EsgService {
 
     return rows.map((row) => ({
       episodeId: row.episodeId,
+      modelDetectMinute: Number(row.detectMinute),
       ...this.toPowerSavingResult({
         reactorId: row.reactorId,
         regime: this.normalizeRegime(row.operatingRegime),
@@ -277,6 +346,16 @@ export class EsgService {
         actualLossUntilDetectionKwh: Number(row.actualLossUntilDetectionKwh),
       }),
     }));
+  }
+
+  private async getReactorIds() {
+    const { rows } = await this.db.query<{ reactorId: string }>(`
+      SELECT DISTINCT reactor_id AS "reactorId"
+      FROM economic_power_readings
+      ORDER BY reactor_id
+    `);
+
+    return rows.map((row) => row.reactorId);
   }
 
   private toPowerSavingResult(input: {
@@ -371,6 +450,12 @@ export class EsgService {
   private validateEsgQuery(query: EsgQuery) {
     if (!Number.isInteger(query.holdMin) || query.holdMin < 0) {
       throw new BadRequestException('holdMin must be a non-negative integer.');
+    }
+    if (
+      query.playbackMinute !== undefined
+      && (!Number.isInteger(query.playbackMinute) || query.playbackMinute < 0)
+    ) {
+      throw new BadRequestException('playbackMinute must be a non-negative integer.');
     }
     for (const [name, value] of [
       ['from', query.from],
