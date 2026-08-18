@@ -50,6 +50,48 @@ export class EsgController {
     });
   }
 
+  @Get('reactor-losses')
+  @ApiOperation({ summary: '공정 모니터링용 반응기별 방치·예방 가능 전력 손실 조회' })
+  @EsgQueryDocs()
+  @ApiOkResponse({
+    schema: {
+      example: {
+        playbackMinute: 5,
+        maxPlaybackMinute: 15,
+        isPlaybackComplete: false,
+        totalUnmitigatedLossKwh: 176.903812,
+        totalAvoidableLossKwh: 176.812345,
+        reactors: [
+          {
+            reactorId: 'B_R3',
+            episodeCount: 3,
+            unmitigatedLossKwh: 101.93098,
+            actualLossUntilDetectionKwh: 0.08,
+            avoidableLossKwh: 101.85098,
+            savingRatePct: 99.92,
+          },
+        ],
+      },
+    },
+  })
+  getReactorLosses(
+    @Query('runId') runId?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('reactorId') reactorId?: string,
+    @Query('holdMin') holdMin = '0',
+    @Query('playbackMinute') playbackMinute?: string,
+  ) {
+    return this.esgService.getReactorLosses({
+      runId,
+      from,
+      to,
+      reactorId,
+      holdMin: Number(holdMin),
+      playbackMinute: playbackMinute === undefined ? undefined : Number(playbackMinute),
+    });
+  }
+
   @Get('summary')
   @ApiOperation({ summary: 'DB의 이상 탐지 결과 전체 ESG 절감 성과 요약' })
   @EsgQueryDocs()

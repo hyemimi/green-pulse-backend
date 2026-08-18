@@ -104,6 +104,29 @@ GET /api/esg/monthly
 
 선택 필터는 `runId`, `from`, `to`, `reactorId`, `holdMin`입니다.
 
+## 공정 모니터링 반응기별 전력 손실 API
+
+```http
+GET /api/esg/reactor-losses?holdMin=0
+```
+
+각 반응기의 고장 에피소드를 합산하여 다음 값을 반환합니다.
+
+```text
+unmitigatedLossKwh: 조치하지 않고 방치했을 때의 예상 총 전력 손실
+actualLossUntilDetectionKwh: 고장 시작부터 AI 탐지 전까지 실제 발생한 손실
+avoidableLossKwh: AI 조기 탐지로 예방 가능한 전력 손실
+savingRatePct: 방치 시 손실 중 예방 가능한 비율
+```
+
+실시간 데모에서는 `playbackMinute`을 0부터 1씩 증가시켜 호출합니다.
+
+```http
+GET /api/esg/reactor-losses?holdMin=0&playbackMinute=5
+```
+
+각 에피소드의 계산 시각은 `고장 시작 시각 + playbackMinute`이며, 실제 ML 탐지 시각을 넘지 않습니다. 따라서 예방 가능 전력량은 매 공정 1분마다 해당 구간의 `wasted_power_kw / 60`만큼 감소하고, 탐지가 완료된 뒤에는 최종 `saved_kwh`에서 멈춥니다.
+
 ## ESG 환산계수 API
 
 ```http
