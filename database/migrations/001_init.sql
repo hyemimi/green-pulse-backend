@@ -43,6 +43,25 @@ CREATE INDEX IF NOT EXISTS idx_reactor_readings_timestamp ON reactor_readings (t
 CREATE INDEX IF NOT EXISTS idx_reactor_readings_reactor_time ON reactor_readings (reactor_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_reactor_readings_fault_time ON reactor_readings (fault_type, timestamp);
 
+-- ESG 전력 계산 전용 데이터입니다.
+-- economic_power_calculation_5cols.csv의 5개 컬럼만 그대로 저장합니다.
+CREATE TABLE IF NOT EXISTS economic_power_readings (
+  timestamp TIMESTAMPTZ NOT NULL,
+  operating_regime TEXT NOT NULL,
+  reactor_id TEXT NOT NULL,
+  fault_type INTEGER NOT NULL,
+  wasted_power_kw DOUBLE PRECISION NOT NULL,
+  PRIMARY KEY (reactor_id, timestamp),
+  CHECK (operating_regime IN ('A', 'B')),
+  CHECK (fault_type BETWEEN 0 AND 4),
+  CHECK (wasted_power_kw >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_economic_power_timestamp
+  ON economic_power_readings (timestamp);
+CREATE INDEX IF NOT EXISTS idx_economic_power_fault_time
+  ON economic_power_readings (fault_type, timestamp);
+
 CREATE TABLE IF NOT EXISTS fault_events (
   id BIGSERIAL PRIMARY KEY,
   run_id TEXT NOT NULL REFERENCES model_runs(id) ON DELETE CASCADE,

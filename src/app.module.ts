@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { DatabaseModule } from './database/database.module';
 import { HealthController } from './health.controller';
+import { EsgModule } from './esg/esg.module';
 
 @Module({
   imports: [
@@ -11,6 +12,7 @@ import { HealthController } from './health.controller';
     ConfigModule.forRoot({ isGlobal: true }),
     DatabaseModule,
     DashboardModule,
+    EsgModule,
   ],
   controllers: [HealthController],
 })
