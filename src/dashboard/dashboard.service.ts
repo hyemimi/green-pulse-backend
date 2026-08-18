@@ -347,25 +347,25 @@ async getDetections(runId?: string, holdMin = 0) {
     specialist: string | null;
     score: number | null;
   }>(
-    `
-      SELECT
-        ep.episode_id AS "episodeId",
-        ep.reactor_id AS "reactorId",
-        ep.fault AS "faultRaw",
-        ev.event_time AS "detectedAt",
-        ep.correct_delay_min AS "delayMin",
-        ev.predicted_fault AS "predictedFaultRaw",
-        ev.specialist,
-        ev.score
-      FROM episode_results ep
-      LEFT JOIN fault_events ev
-        ON ev.run_id = ep.run_id
-        AND ev.hold_min = ep.hold_min
-        AND ev.episode_id = ep.episode_id
-        AND ev.predicted_fault = ep.fault
-      WHERE ep.run_id = $1 AND ep.hold_min = $2
-      ORDER BY ev.event_time NULLS LAST, ep.episode_id
-    `,
+         `
+        SELECT DISTINCT ON (ep.episode_id)
+          ep.episode_id AS "episodeId",
+          ep.reactor_id AS "reactorId",
+          ep.fault AS "faultRaw",
+          ev.event_time AS "detectedAt",
+          ep.correct_delay_min AS "delayMin",
+          ev.predicted_fault AS "predictedFaultRaw",
+          ev.specialist,
+          ev.score
+        FROM episode_results ep
+        LEFT JOIN fault_events ev
+          ON ev.run_id = ep.run_id
+          AND ev.hold_min = ep.hold_min
+          AND ev.episode_id = ep.episode_id
+          AND ev.predicted_fault = ep.fault
+        WHERE ep.run_id = $1 AND ep.hold_min = $2
+        ORDER BY ep.episode_id, ev.event_time
+      `,
     [resolvedRunId, holdMin],
   );
 
