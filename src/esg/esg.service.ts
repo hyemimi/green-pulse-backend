@@ -39,6 +39,20 @@ type EpisodeLossRow = DetectionLossRow & {
   detectMinute: number | string;
 };
 
+type QuarterTargetRow = {
+  quarter: number;
+  targetKwh: number | string;
+  updatedAt: Date;
+};
+
+type TrainingEpisodeRow = {
+  reactorId: string;
+  operatingRegime: string;
+  fault: number;
+  onsetTimestamp: Date;
+  actualLossUntilDetectionKwh: number | string;
+};
+
 const UNMITIGATED_LOSS_KWH: Record<Regime, Record<number, number>> = {
   A: { 1: 3.520724, 2: 66.480152, 3: 0.684389, 4: 36.743387 },
   B: { 1: 3.910796, 2: 38.773997, 3: 2.894215, 4: 24.382986 },
@@ -142,6 +156,10 @@ export class EsgService {
     const runId = await this.resolveRunId(query.runId);
     const episodes = await this.getEpisodeSavings(runId, query);
     const energySavedKwh = episodes.reduce((sum, episode) => sum + episode.savedKwh, 0);
+    const totalUnmitigatedLossKwh = episodes.reduce(
+      (sum, episode) => sum + episode.unmitigatedLossKwh,
+      0,
+    );
 
     return {
       runId,
@@ -150,6 +168,11 @@ export class EsgService {
       holdMin: query.holdMin,
       measurementMode: 'ESTIMATED',
       savingRecordCount: episodes.length,
+      totalUnmitigatedLossKwh: this.round(totalUnmitigatedLossKwh, 6),
+      savingRatePct: this.round(
+        totalUnmitigatedLossKwh > 0 ? (energySavedKwh / totalUnmitigatedLossKwh) * 100 : 0,
+        2,
+      ),
       ...convertEnergySaving(energySavedKwh, this.factors),
       calculationMethod: CALCULATION_METHOD,
       factorVersion: this.factors.version,
@@ -224,11 +247,20 @@ export class EsgService {
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([month, monthEpisodes]) => {
         const energySavedKwh = monthEpisodes.reduce((sum, episode) => sum + episode.savedKwh, 0);
+        const totalUnmitigatedLossKwh = monthEpisodes.reduce(
+          (sum, episode) => sum + episode.unmitigatedLossKwh,
+          0,
+        );
         cumulativeEnergySavedKwh += energySavedKwh;
 
         return {
           month,
           savingRecordCount: monthEpisodes.length,
+          totalUnmitigatedLossKwh: this.round(totalUnmitigatedLossKwh, 6),
+          savingRatePct: this.round(
+            totalUnmitigatedLossKwh > 0 ? (energySavedKwh / totalUnmitigatedLossKwh) * 100 : 0,
+            2,
+          ),
           ...convertEnergySaving(energySavedKwh, this.factors),
           cumulativeEnergySavedKwh,
           cumulativeCo2ReducedKg: cumulativeEnergySavedKwh * this.factors.co2KgPerKwh,
@@ -240,6 +272,189 @@ export class EsgService {
           factorVersion: this.factors.version,
         };
       });
+  }
+
+  async getQuarterTargets(year: number) {
+    this.validateTargetYear(year);
+    const { rows } = await this.db.query<QuarterTargetRow>(`
+      SELECT
+        quarter,
+        target_kwh AS "targetKwh",
+        updated_at AS "updatedAt"
+      FROM esg_quarter_targets
+      WHERE year = $1
+      ORDER BY quarter
+    `, [year]);
+
+    return {
+      year,
+      targets: rows.map((row) => ({
+        quarter: row.quarter,
+        targetKwh: Number(row.targetKwh),
+        updatedAt: row.updatedAt,
+      })),
+    };
+  }
+
+  async saveQuarterTargets(
+    year: number,
+    targets: Array<{ quarter: number; targetKwh: number }>,
+  ) {
+    this.validateTargetYear(year);
+    if (!Array.isArray(targets)) {
+      throw new BadRequestException('targets must be an array.');
+    }
+
+    const normalizedTargets = targets.map((target) => ({
+      quarter: Number(target?.quarter),
+      targetKwh: Number(target?.targetKwh),
+    }));
+    const quarters = normalizedTargets.map((target) => target.quarter);
+
+    if (
+      normalizedTargets.some((target) => (
+        !Number.isInteger(target.quarter)
+        || target.quarter < 1
+        || target.quarter > 4
+        || !Number.isFinite(target.targetKwh)
+        || target.targetKwh <= 0
+      ))
+    ) {
+      throw new BadRequestException('Each target requires quarter 1-4 and targetKwh greater than 0.');
+    }
+    if (new Set(quarters).size !== quarters.length) {
+      throw new BadRequestException('Each quarter can only be included once.');
+    }
+
+    await this.db.query(`
+      WITH input AS (
+        SELECT quarter, target_kwh
+        FROM UNNEST($2::INTEGER[], $3::NUMERIC[]) AS value(quarter, target_kwh)
+      ),
+      deleted AS (
+        DELETE FROM esg_quarter_targets existing
+        WHERE existing.year = $1
+          AND NOT EXISTS (
+            SELECT 1 FROM input WHERE input.quarter = existing.quarter
+          )
+      )
+      INSERT INTO esg_quarter_targets (year, quarter, target_kwh, updated_at)
+      SELECT $1, quarter, target_kwh, NOW()
+      FROM input
+      ON CONFLICT (year, quarter) DO UPDATE
+      SET target_kwh = EXCLUDED.target_kwh,
+          updated_at = NOW()
+    `, [year, quarters, normalizedTargets.map((target) => target.targetKwh)]);
+
+    return this.getQuarterTargets(year);
+  }
+
+  async getTrainingEstimate(from: string, to: string, assumedDetectionMin = 15) {
+    const query: EsgQuery = { from, to, holdMin: 0 };
+    this.validateEsgQuery(query);
+    if (!from || !to) {
+      throw new BadRequestException('from and to are required.');
+    }
+    if (!Number.isInteger(assumedDetectionMin) || assumedDetectionMin < 0) {
+      throw new BadRequestException('assumedDetectionMin must be a non-negative integer.');
+    }
+
+    const { rows } = await this.db.query<TrainingEpisodeRow>(
+      `
+        WITH readings_with_previous AS (
+          SELECT
+            timestamp,
+            reactor_id,
+            COALESCE(operating_regime, LEFT(reactor_id, 1)) AS operating_regime,
+            fault_type,
+            LAG(timestamp) OVER (PARTITION BY reactor_id ORDER BY timestamp) AS previous_timestamp,
+            LAG(fault_type) OVER (PARTITION BY reactor_id ORDER BY timestamp) AS previous_fault_type
+          FROM economic_power_readings
+          WHERE timestamp >= ($1::date - INTERVAL '1 minute')
+            AND timestamp < ($2::date + INTERVAL '1 day')
+        ),
+        fault_starts AS (
+          SELECT
+            timestamp AS onset_timestamp,
+            reactor_id,
+            operating_regime,
+            fault_type
+          FROM readings_with_previous
+          WHERE timestamp >= $1::date
+            AND timestamp < ($2::date + INTERVAL '1 day')
+            AND fault_type <> 0
+            AND (
+              previous_fault_type IS DISTINCT FROM fault_type
+              OR previous_timestamp IS DISTINCT FROM timestamp - INTERVAL '1 minute'
+            )
+        )
+        SELECT
+          start.reactor_id AS "reactorId",
+          start.operating_regime AS "operatingRegime",
+          start.fault_type::int AS fault,
+          start.onset_timestamp AS "onsetTimestamp",
+          COALESCE(SUM(GREATEST(COALESCE(reading.wasted_power_kw, 0), 0)), 0)::float / 60.0
+            AS "actualLossUntilDetectionKwh"
+        FROM fault_starts start
+        LEFT JOIN economic_power_readings reading
+          ON reading.reactor_id = start.reactor_id
+         AND reading.timestamp >= start.onset_timestamp
+         AND reading.timestamp < start.onset_timestamp + ($3::int * INTERVAL '1 minute')
+        GROUP BY
+          start.reactor_id,
+          start.operating_regime,
+          start.fault_type,
+          start.onset_timestamp
+        ORDER BY start.onset_timestamp
+      `,
+      [from, to, assumedDetectionMin],
+    );
+
+    const episodes = rows.map((row) => {
+      const regime = this.normalizeRegime(row.operatingRegime);
+      const unmitigatedLossKwh = UNMITIGATED_LOSS_KWH[regime][row.fault];
+      const actualLossUntilDetectionKwh = Number(row.actualLossUntilDetectionKwh);
+      return {
+        date: new Date(row.onsetTimestamp).toISOString().slice(0, 10),
+        savedKwh: Math.max(unmitigatedLossKwh - actualLossUntilDetectionKwh, 0),
+      };
+    });
+    const dailyTotals = new Map<string, number>();
+    for (const episode of episodes) {
+      dailyTotals.set(episode.date, (dailyTotals.get(episode.date) ?? 0) + episode.savedKwh);
+    }
+    let cumulativeEnergySavedKwh = 0;
+    const dailySavings = [...dailyTotals.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([date, energySavedKwh]) => {
+        cumulativeEnergySavedKwh += energySavedKwh;
+        return {
+          date,
+          energySavedKwh: this.round(energySavedKwh, 6),
+          cumulativeEnergySavedKwh: this.round(cumulativeEnergySavedKwh, 6),
+        };
+      });
+    const energySavedKwh = episodes.reduce((sum, episode) => sum + episode.savedKwh, 0);
+    const totalUnmitigatedLossKwh = rows.reduce((sum, row) => {
+      const regime = this.normalizeRegime(row.operatingRegime);
+      return sum + UNMITIGATED_LOSS_KWH[regime][row.fault];
+    }, 0);
+
+    return {
+      period: { from, to },
+      measurementMode: 'TRAINING_DATA_ESTIMATE',
+      assumedDetectionMin,
+      savingRecordCount: episodes.length,
+      totalUnmitigatedLossKwh: this.round(totalUnmitigatedLossKwh, 6),
+      savingRatePct: this.round(
+        totalUnmitigatedLossKwh > 0 ? (energySavedKwh / totalUnmitigatedLossKwh) * 100 : 0,
+        2,
+      ),
+      ...convertEnergySaving(energySavedKwh, this.factors),
+      dailySavings,
+      calculationMethod: CALCULATION_METHOD,
+      factorVersion: this.factors.version,
+    };
   }
 
   private async getEpisodeSavings(runId: string, query: EsgQuery) {
@@ -401,6 +616,12 @@ export class EsgService {
       throw new BadRequestException(`Invalid predictedFault: ${rawFault}`);
     }
     return fault;
+  }
+
+  private validateTargetYear(year: number) {
+    if (!Number.isInteger(year) || year < 2000 || year > 9999) {
+      throw new BadRequestException('year must be an integer between 2000 and 9999.');
+    }
   }
 
   private normalizeRegime(rawRegime: string): Regime {
