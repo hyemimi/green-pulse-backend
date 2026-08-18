@@ -4,6 +4,7 @@ import { DashboardModule } from './dashboard/dashboard.module';
 import { DatabaseModule } from './database/database.module';
 import { HealthController } from './health.controller';
 import { EsgModule } from './esg/esg.module';
+import { ReportsModule } from './reports/reports.module';
 
 @Module({
   imports: [
@@ -13,6 +14,7 @@ import { EsgModule } from './esg/esg.module';
     DatabaseModule,
     DashboardModule,
     EsgModule,
+    ReportsModule,
   ],
   controllers: [HealthController],
 })
