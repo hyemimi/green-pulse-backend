@@ -113,14 +113,14 @@ GET /api/esg/conversion-factors
 전력 절감량을 CO2, 종이컵, 자동차 주행거리, 소나무, 휴지 등으로 환산하는 계수와 현재 전력 계산 기준을 반환합니다.
 
 ```env
-CO2_FACTOR_KG_PER_KWH=0.4541
+CO2_FACTOR_KG_PER_KWH=0.5304
 PAPER_CUP_CO2_KG=0.0452
 CAR_CO2_KG_PER_KM=0.14
 PINE_TREE_CO2_KG_PER_YEAR=125
 TISSUE_ROLL_CO2_KG=0.288
-ELECTRICITY_PRICE_KRW_PER_KWH=0
+ELECTRICITY_PRICE_KRW_PER_KWH=150
 ANNUAL_ENERGY_TARGET_KWH=0
-ESG_FACTOR_VERSION=economic-power-csv-v1
+ESG_FACTOR_VERSION=economic-power-csv-v2
 ```
 
 ## 실행 확인

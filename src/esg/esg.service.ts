@@ -55,14 +55,14 @@ export class EsgService {
     private readonly config: ConfigService,
   ) {
     this.factors = {
-      co2KgPerKwh: this.numberConfig('CO2_FACTOR_KG_PER_KWH', 0.4541),
+      co2KgPerKwh: this.numberConfig('CO2_FACTOR_KG_PER_KWH', 0.5304),
       paperCupCo2Kg: this.numberConfig('PAPER_CUP_CO2_KG', 0.0452),
       carCo2KgPerKm: this.numberConfig('CAR_CO2_KG_PER_KM', 0.14),
       pineTreeCo2KgPerYear: this.numberConfig('PINE_TREE_CO2_KG_PER_YEAR', 125),
       tissueRollCo2Kg: this.numberConfig('TISSUE_ROLL_CO2_KG', 0.288),
-      electricityPriceKrwPerKwh: this.numberConfig('ELECTRICITY_PRICE_KRW_PER_KWH', 0),
+      electricityPriceKrwPerKwh: this.numberConfig('ELECTRICITY_PRICE_KRW_PER_KWH', 150),
       annualEnergyTargetKwh: this.numberConfig('ANNUAL_ENERGY_TARGET_KWH', 0),
-      version: this.config.get<string>('ESG_FACTOR_VERSION') ?? 'economic-power-csv-v1',
+      version: this.config.get<string>('ESG_FACTOR_VERSION') ?? 'economic-power-csv-v2',
     };
   }
 
