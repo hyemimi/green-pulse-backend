@@ -128,10 +128,16 @@ Render Dashboard에서:
 |---|---|
 | `DATABASE_URL` | Neon connection string |
 | `DATABASE_SSL` | `true` |
-| `CORS_ORIGIN` | 프론트 배포 URL |
+| `CORS_ORIGIN` | 허용할 프론트 origin 목록. 예: `http://localhost:5173,https://dev-green-pulse-frontend.onrender.com` |
 | `NODE_ENV` | `production` |
 
 Render Web Service는 `PORT` 환경변수를 제공합니다. 이 서버는 `PORT`를 읽고 `0.0.0.0`에 바인딩합니다.
+
+`CORS_ORIGIN`은 쉼표로 여러 origin을 넣을 수 있습니다. 로컬 프론트와 배포된 dev 프론트를 둘 다 허용하려면 아래처럼 설정합니다.
+
+```text
+CORS_ORIGIN=http://localhost:5173,https://dev-green-pulse-frontend.onrender.com
+```
 
 ## 8. Render Blueprint 사용
 

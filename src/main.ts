@@ -7,10 +7,16 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   const config = app.get(ConfigService);
 
+  const corsOrigins = config
+    .get<string>('CORS_ORIGIN')
+    ?.split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
   // 프론트 개발 서버가 별도 포트에서 뜨는 구조를 고려해 CORS를 환경변수로 열어둡니다.
-  // 배포 시에는 CORS_ORIGIN을 실제 프론트 도메인으로 제한하면 됩니다.
+  // 여러 origin은 쉼표로 구분합니다. 예: http://localhost:5173,https://dev-frontend.example.com
   app.enableCors({
-    origin: config.get<string>('CORS_ORIGIN')?.split(',') ?? true,
+    origin: corsOrigins && corsOrigins.length > 0 ? corsOrigins : true,
     credentials: true,
   });
 
@@ -22,6 +28,7 @@ async function bootstrap() {
     .setVersion('0.1.0')
     .addTag('health', 'Server health check')
     .addTag('dashboard', 'Dashboard summaries and model result APIs')
+    .addTag('esg', 'Estimated energy savings and ESG conversion APIs')
     .build();
   const swaggerDocument = SwaggerModule.createDocument(app, swaggerConfig);
   SwaggerModule.setup('api-docs', app, swaggerDocument, {

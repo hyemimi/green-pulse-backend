@@ -73,7 +73,7 @@ DATABASE_URL=postgres://localhost:5432/green_pulse
 ```env
 DATABASE_URL=postgres://localhost:5432/green_pulse
 PORT=3000
-CORS_ORIGIN=http://localhost:5173
+CORS_ORIGIN=http://localhost:5173,https://dev-green-pulse-frontend.onrender.com
 MODEL_WORKSPACE=./fault_run
 ```
 

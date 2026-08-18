@@ -8,12 +8,14 @@
     "start:dev": "nest start --watch",
     "build": "nest build",
     "lint": "eslint \"src/**/*.ts\"",
-    "db:migrate": "psql \"$DATABASE_URL\" -f database/migrations/001_init.sql",
+    "db:migrate": "node --env-file-if-exists=.env -r ts-node/register src/scripts/run-migration.ts",
     "import:results": "ts-node src/scripts/import-model-output.ts",
+    "import:economic-power": "node --env-file-if-exists=.env -r ts-node/register src/scripts/import-economic-power.ts",
     "start:prod": "node dist/main.js",
-    "db:migrate:node": "ts-node src/scripts/run-migration.ts",
+    "db:migrate:node": "node --env-file-if-exists=.env -r ts-node/register src/scripts/run-migration.ts",
     "db:migrate:prod": "node dist/scripts/run-migration.js",
-    "import:results:prod": "node dist/scripts/import-model-output.js"
+    "import:results:prod": "node dist/scripts/import-model-output.js",
+    "import:economic-power:prod": "node dist/scripts/import-economic-power.js"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.15",
