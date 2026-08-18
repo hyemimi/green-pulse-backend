@@ -22,7 +22,7 @@ npm install
 DATABASE_URL="NEON_DEV_DATABASE_URL"
 DATABASE_SSL=true
 PORT=3000
-CORS_ORIGIN=http://localhost:5173
+CORS_ORIGIN=http://localhost:5173,https://dev-green-pulse-frontend.onrender.com
 MODEL_WORKSPACE=./fault_run
 ```
 
