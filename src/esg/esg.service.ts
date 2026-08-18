@@ -44,7 +44,7 @@ const UNMITIGATED_LOSS_KWH: Record<Regime, Record<number, number>> = {
 };
 
 const CALCULATION_METHOD =
-  'saved = regime/fault unmitigated loss - SUM(power_consumption_kw * efficiency_loss_pct / 100) / 60';
+  'saved = regime/fault unmitigated loss - SUM(wasted_power_kw from onset inclusive to detection exclusive) / 60';
 
 @Injectable()
 export class EsgService {
@@ -62,7 +62,7 @@ export class EsgService {
       tissueRollCo2Kg: this.numberConfig('TISSUE_ROLL_CO2_KG', 0.288),
       electricityPriceKrwPerKwh: this.numberConfig('ELECTRICITY_PRICE_KRW_PER_KWH', 0),
       annualEnergyTargetKwh: this.numberConfig('ANNUAL_ENERGY_TARGET_KWH', 0),
-      version: this.config.get<string>('ESG_FACTOR_VERSION') ?? 'backend-db-v1',
+      version: this.config.get<string>('ESG_FACTOR_VERSION') ?? 'economic-power-csv-v1',
     };
   }
 
@@ -72,7 +72,8 @@ export class EsgService {
       factors: this.factors,
       powerSavingCalculation: {
         method: CALCULATION_METHOD,
-        wastedPowerKwFormula: 'power_consumption_kw * efficiency_loss_pct / 100',
+        dataSource: 'economic_power_calculation_5cols.csv imported into economic_power_readings',
+        wastedPowerKwFormula: 'Use the CSV wasted_power_kw value directly',
         intervalMinutes: 1,
         unmitigatedLossKwh: UNMITIGATED_LOSS_KWH,
       },
@@ -96,23 +97,15 @@ export class EsgService {
         SELECT
           COALESCE(d.operating_regime, LEFT(d.reactor_id, 1)) AS "operatingRegime",
           d.fault_type::int AS "actualFaultAtDetection",
-          (
-            COALESCE(d.power_consumption_kw, 0)
-            * COALESCE(d.efficiency_loss_pct, 0)
-            / 100.0
-          )::float AS "wastedPowerKwAtDetection",
+          GREATEST(COALESCE(d.wasted_power_kw, 0), 0)::float AS "wastedPowerKwAtDetection",
           COALESCE(loss.actual_loss_kwh, 0)::float AS "actualLossUntilDetectionKwh",
           COALESCE(loss.integrated_minutes, 0)::int AS "integratedMinutes"
-        FROM reactor_readings d
+        FROM economic_power_readings d
         CROSS JOIN LATERAL (
           SELECT
             COUNT(*)::int AS integrated_minutes,
-            SUM(
-              COALESCE(r.power_consumption_kw, 0)
-              * COALESCE(r.efficiency_loss_pct, 0)
-              / 100.0
-            ) / 60.0 AS actual_loss_kwh
-          FROM reactor_readings r
+            SUM(GREATEST(COALESCE(r.wasted_power_kw, 0), 0)) / 60.0 AS actual_loss_kwh
+          FROM economic_power_readings r
           WHERE r.reactor_id = d.reactor_id
             AND r.timestamp >= $3::timestamptz
             AND r.timestamp < $2::timestamptz
@@ -242,22 +235,16 @@ export class EsgService {
           d.correct_delay_min::float AS "detectMinute",
           COALESCE(detection.operating_regime, LEFT(d.reactor_id, 1)) AS "operatingRegime",
           detection.fault_type::int AS "actualFaultAtDetection",
-          (
-            COALESCE(detection.power_consumption_kw, 0)
-            * COALESCE(detection.efficiency_loss_pct, 0)
-            / 100.0
-          )::float AS "wastedPowerKwAtDetection",
-          COUNT(loss_reading.id)::int AS "integratedMinutes",
+          GREATEST(COALESCE(detection.wasted_power_kw, 0), 0)::float AS "wastedPowerKwAtDetection",
+          COUNT(loss_reading.timestamp)::int AS "integratedMinutes",
           COALESCE(SUM(
-            COALESCE(loss_reading.power_consumption_kw, 0)
-            * COALESCE(loss_reading.efficiency_loss_pct, 0)
-            / 100.0
+            GREATEST(COALESCE(loss_reading.wasted_power_kw, 0), 0)
           ), 0)::float / 60.0 AS "actualLossUntilDetectionKwh"
         FROM correct_detections d
-        INNER JOIN reactor_readings detection
+        INNER JOIN economic_power_readings detection
           ON detection.reactor_id = d.reactor_id
          AND detection.timestamp = d.detect_timestamp
-        LEFT JOIN reactor_readings loss_reading
+        LEFT JOIN economic_power_readings loss_reading
           ON loss_reading.reactor_id = d.reactor_id
          AND loss_reading.timestamp >= d.onset_timestamp
          AND loss_reading.timestamp < d.detect_timestamp
@@ -270,8 +257,7 @@ export class EsgService {
           d.correct_delay_min,
           detection.operating_regime,
           detection.fault_type,
-          detection.power_consumption_kw,
-          detection.efficiency_loss_pct
+          detection.wasted_power_kw
         ORDER BY d.detect_timestamp
       `,
       params,

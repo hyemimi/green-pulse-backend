@@ -24,6 +24,8 @@ fault_run_check/
 
 # Large local source data
 chemical_process_timeseries.csv
+chemical_process_timeseries_final.csv
+economic_power_calculation_5cols.csv
 
 # OS/editor files
 .DS_Store
