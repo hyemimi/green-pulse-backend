@@ -81,6 +81,40 @@ export class DashboardController {
     return this.dashboardService.getOverview(runId, Number(holdMin));
   }
 
+  @Get('dashboard/reactor-status')
+  @ApiOperation({ summary: 'Reactor별 현재 위험 상태 및 활성 알림 요약' })
+  @ApiQuery({ name: 'runId', required: false, description: '조회할 모델 실행 ID. 생략하면 최신 run을 사용합니다.' })
+  @ApiQuery({ name: 'holdMin', required: false, example: 0, description: 'thermal arbitration hold 값입니다.' })
+  @ApiQuery({
+    name: 'windowHours',
+    required: false,
+    example: 24,
+    description: '데이터상 최신 시점 기준, 몇 시간 이내 이벤트를 활성 알림으로 볼지 설정합니다.',
+  })
+  @ApiOkResponse({
+    description: 'Reactor별 CAUTION/OK 상태와 이상 반응기 수, 활성 알림 건수를 반환합니다.',
+    schema: {
+      example: {
+        asOf: '2024-03-30T23:59:00.000Z',
+        windowHours: 24,
+        reactorCount: 6,
+        reactorsAtRisk: 4,
+        activeAlertCount: 15,
+        reactors: [
+          { reactorId: 'A_R1', activeAlertCount: 3, lastEventTime: '2024-03-30T20:10:00.000Z', status: 'CAUTION' },
+          { reactorId: 'A_R2', activeAlertCount: 0, lastEventTime: null, status: 'OK' },
+        ],
+      },
+    },
+  })
+  getReactorStatus(
+    @Query('runId') runId?: string,
+    @Query('holdMin') holdMin = '0',
+    @Query('windowHours') windowHours = '24',
+  ) {
+    return this.dashboardService.getReactorStatus(runId, Number(holdMin), Number(windowHours));
+  }
+
   @Get('dashboard/monthly')
   @ApiOperation({ summary: '월 단위 요약 데이터 조회' })
   @ApiQuery({ name: 'runId', required: false, description: '조회할 모델 실행 ID. 생략하면 최신 run을 사용합니다.' })
@@ -222,4 +256,77 @@ export class DashboardController {
       limit: Number(limit),
     });
   }
+  @Get('readings')
+@ApiOperation({ summary: '원본 센서 시계열 범용 조회 (reactor/기간/faultType 필터)' })
+@ApiQuery({ name: 'reactorId', required: false, example: 'A_R1' })
+@ApiQuery({ name: 'from', required: false, example: '2024-01-01' })
+@ApiQuery({ name: 'to', required: false, example: '2024-01-31' })
+@ApiQuery({ name: 'faultType', required: false, example: 1, description: '0=Normal, 1=F1, 2=F2, 3=F3, 4=F4' })
+@ApiQuery({ name: 'limit', required: false, example: 1000, description: '최대 반환 개수입니다. 서버에서 10000개로 제한합니다.' })
+@ApiOkResponse({
+  description: '조건에 맞는 원본 센서 시계열을 반환합니다.',
+})
+getReadings(
+  @Query('reactorId') reactorId?: string,
+  @Query('from') from?: string,
+  @Query('to') to?: string,
+  @Query('faultType') faultType?: string,
+  @Query('limit') limit = '1000',
+) {
+  return this.dashboardService.getReadings({
+    reactorId,
+    from,
+    to,
+    faultType: faultType !== undefined ? Number(faultType) : undefined,
+    limit: Number(limit),
+  });
+}
+@Get('detections')
+@ApiOperation({ summary: '에피소드 기반 이상 탐지 알림 목록' })
+@ApiQuery({ name: 'runId', required: false, description: '조회할 모델 실행 ID. 생략하면 최신 run을 사용합니다.' })
+@ApiQuery({ name: 'holdMin', required: false, example: 0, description: 'thermal arbitration hold 값입니다.' })
+@ApiOkResponse({
+  description: '에피소드별 탐지 결과를 프론트 알림 패널 형식에 맞게 반환합니다.',
+  schema: {
+    example: [
+      {
+        episodeId: 17,
+        reactorId: 'A_R2',
+        faultType: 'F1',
+        faultOnset: '2024-03-14T19:06:00.000Z',
+        detectedAt: '2024-03-14T19:08:00.000Z',
+        delayMin: 2,
+        predictedFault: 'F1',
+        specialist: 'thermal_after_hold',
+        score: 1,
+      },
+    ],
+  },
+})
+
+getDetections(@Query('runId') runId?: string, @Query('holdMin') holdMin = '0') {
+  return this.dashboardService.getDetections(runId, Number(holdMin));
+}
+@Get('episodes/:episodeId/sensor-trend')
+@ApiOperation({ summary: '에피소드 기준 센서 트렌드 조회 (전조~탐지 구간 포함)' })
+@ApiParam({ name: 'episodeId', example: 17, description: '조회할 episode ID입니다.' })
+@ApiQuery({ name: 'runId', required: false, description: '조회할 모델 실행 ID. 생략하면 최신 run을 사용합니다.' })
+@ApiQuery({ name: 'holdMin', required: false, example: 0, description: 'thermal arbitration hold 값입니다.' })
+@ApiQuery({ name: 'bufferMin', required: false, example: 15, description: '전조/탐지 시각 앞뒤로 몇 분을 더 보여줄지 설정합니다.' })
+@ApiOkResponse({
+  description: '에피소드의 전조~탐지 구간을 포함한 센서 시계열을 반환합니다.',
+})
+getEpisodeSensorTrend(
+  @Param('episodeId') episodeId: string,
+  @Query('runId') runId?: string,
+  @Query('holdMin') holdMin = '0',
+  @Query('bufferMin') bufferMin = '15',
+) {
+  return this.dashboardService.getEpisodeSensorTrend(
+    Number(episodeId),
+    runId,
+    Number(holdMin),
+    Number(bufferMin),
+  );
+}
 }

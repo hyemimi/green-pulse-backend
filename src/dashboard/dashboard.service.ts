@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
 
 type MonthlyQuery = {
@@ -62,19 +62,19 @@ export class DashboardService {
         `,
         [resolvedRunId],
       ),
-      this.db.query(
-        `
-          SELECT
-            COALESCE(SUM(reading_count), 0)::int AS "readingCount",
-            COALESCE(SUM(fault_reading_count), 0)::int AS "faultReadingCount",
-            COALESCE(SUM(normal_reading_count), 0)::int AS "normalReadingCount",
-            COUNT(DISTINCT month)::int AS "monthCount",
-            COUNT(DISTINCT reactor_id)::int AS "reactorCount"
-          FROM monthly_summaries
-          WHERE run_id = $1
-        `,
-        [resolvedRunId],
-      ),
+  this.db.query(
+  `
+    SELECT
+      COALESCE(SUM(reading_count) FILTER (WHERE reactor_id IS NULL), 0)::int AS "readingCount",
+      COALESCE(SUM(fault_reading_count) FILTER (WHERE reactor_id IS NULL), 0)::int AS "faultReadingCount",
+      COALESCE(SUM(normal_reading_count) FILTER (WHERE reactor_id IS NULL), 0)::int AS "normalReadingCount",
+      COUNT(DISTINCT month)::int AS "monthCount",
+      COUNT(DISTINCT reactor_id)::int AS "reactorCount"
+    FROM monthly_summaries
+    WHERE run_id = $1
+  `,
+  [resolvedRunId],
+),
       this.db.query(
         `
           SELECT
@@ -258,6 +258,8 @@ export class DashboardService {
           vibration_rms AS "vibrationRms",
           motor_current AS "motorCurrent",
           power_consumption_kw AS "powerConsumptionKw",
+          temp_setpoint AS "tempSetpoint",
+          pressure_setpoint AS "pressureSetpoint",
           fault_type AS "faultType",
           efficiency_loss_pct AS "efficiencyLossPct"
         FROM reactor_readings
@@ -269,6 +271,278 @@ export class DashboardService {
     );
 
     return rows;
+  }
+
+  async getReadings(query: {
+  reactorId?: string;
+  from?: string;
+  to?: string;
+  faultType?: number;
+  limit: number;
+}) {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (query.reactorId) {
+    params.push(query.reactorId);
+    conditions.push(`reactor_id = $${params.length}`);
+  }
+
+  if (query.from) {
+    params.push(query.from);
+    conditions.push(`timestamp >= $${params.length}`);
+  }
+
+  if (query.to) {
+    params.push(query.to);
+    conditions.push(`timestamp <= $${params.length}`);
+  }
+
+  if (query.faultType !== undefined) {
+    params.push(query.faultType);
+    conditions.push(`fault_type = $${params.length}`);
+  }
+
+  params.push(Math.min(Math.max(query.limit || 1000, 1), 10000));
+  const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  const { rows } = await this.db.query(
+    `
+      SELECT
+        timestamp,
+        reactor_id AS "reactorId",
+        reactor_temp AS "reactorTemp",
+        reactor_pressure AS "reactorPressure",
+        feed_flow_rate AS "feedFlowRate",
+        coolant_flow_rate AS "coolantFlowRate",
+        agitator_speed_rpm AS "agitatorSpeedRpm",
+        vibration_rms AS "vibrationRms",
+        motor_current AS "motorCurrent",
+        power_consumption_kw AS "powerConsumptionKw",
+        temp_setpoint AS "tempSetpoint",
+        pressure_setpoint AS "pressureSetpoint",
+        fault_type AS "faultType",
+        efficiency_loss_pct AS "efficiencyLossPct"
+      FROM reactor_readings
+      ${whereClause}
+      ORDER BY timestamp
+      LIMIT $${params.length}
+    `,
+    params,
+  );
+
+  return rows;
+}
+
+async getDetections(runId?: string, holdMin = 0) {
+  const resolvedRunId = await this.resolveRunId(runId);
+
+  const { rows } = await this.db.query<{
+    episodeId: number;
+    reactorId: string;
+    faultRaw: number;
+    detectedAt: string | null;
+    delayMin: number | null;
+    predictedFaultRaw: number | null;
+    specialist: string | null;
+    score: number | null;
+  }>(
+    `
+      SELECT
+        ep.episode_id AS "episodeId",
+        ep.reactor_id AS "reactorId",
+        ep.fault AS "faultRaw",
+        ev.event_time AS "detectedAt",
+        ep.correct_delay_min AS "delayMin",
+        ev.predicted_fault AS "predictedFaultRaw",
+        ev.specialist,
+        ev.score
+      FROM episode_results ep
+      LEFT JOIN fault_events ev
+        ON ev.run_id = ep.run_id
+        AND ev.hold_min = ep.hold_min
+        AND ev.episode_id = ep.episode_id
+        AND ev.predicted_fault = ep.fault
+      WHERE ep.run_id = $1 AND ep.hold_min = $2
+      ORDER BY ev.event_time NULLS LAST, ep.episode_id
+    `,
+    [resolvedRunId, holdMin],
+  );
+
+  const faultLabel = (value: number | null) => {
+    if (value === null || value === undefined) return null;
+    return value === 0 ? 'Normal' : `F${value}`;
+  };
+
+  return rows.map((row) => {
+    const detectedAt = row.detectedAt ? new Date(row.detectedAt) : null;
+    const faultOnset =
+      detectedAt && row.delayMin !== null
+        ? new Date(detectedAt.getTime() - row.delayMin * 60 * 1000).toISOString()
+        : null;
+
+    return {
+      episodeId: row.episodeId,
+      reactorId: row.reactorId,
+      faultType: faultLabel(row.faultRaw),
+      faultOnset,
+      detectedAt: detectedAt ? detectedAt.toISOString() : null,
+      delayMin: row.delayMin,
+      predictedFault: faultLabel(row.predictedFaultRaw),
+      specialist: row.specialist,
+      score: row.score,
+    };
+  });
+}
+async getEpisodeSensorTrend(episodeId: number, runId?: string, holdMin = 0, bufferMin = 15) {
+  const resolvedRunId = await this.resolveRunId(runId);
+
+  const { rows } = await this.db.query<{
+    reactorId: string;
+    detectedAt: string | null;
+    delayMin: number | null;
+  }>(
+    `
+      SELECT
+        ep.reactor_id AS "reactorId",
+        ev.event_time AS "detectedAt",
+        ep.correct_delay_min AS "delayMin"
+      FROM episode_results ep
+      LEFT JOIN fault_events ev
+        ON ev.run_id = ep.run_id
+        AND ev.hold_min = ep.hold_min
+        AND ev.episode_id = ep.episode_id
+        AND ev.predicted_fault = ep.fault
+      WHERE ep.run_id = $1 AND ep.hold_min = $2 AND ep.episode_id = $3
+      LIMIT 1
+    `,
+    [resolvedRunId, holdMin, episodeId],
+  );
+
+  const episode = rows[0];
+  if (!episode || !episode.detectedAt || episode.delayMin === null) {
+    throw new NotFoundException(`Episode ${episodeId} has no detection data for run ${resolvedRunId}`);
+  }
+
+  const detectedAt = new Date(episode.detectedAt);
+  const faultOnset = new Date(detectedAt.getTime() - episode.delayMin * 60 * 1000);
+  const from = new Date(faultOnset.getTime() - bufferMin * 60 * 1000);
+  const to = new Date(detectedAt.getTime() + bufferMin * 60 * 1000);
+
+  const { rows: readingRows } = await this.db.query<{
+    timestamp: string;
+    reactorTemp: number | null;
+    reactorPressure: number | null;
+    feedFlowRate: number | null;
+    vibrationRms: number | null;
+    motorCurrent: number | null;
+    powerConsumptionKw: number | null;
+    tempSetpoint: number | null;
+    pressureSetpoint: number | null;
+    faultTypeRaw: number;
+    efficiencyLossPct: number | null;
+  }>(
+    `
+      SELECT
+        timestamp,
+        reactor_temp AS "reactorTemp",
+        reactor_pressure AS "reactorPressure",
+        feed_flow_rate AS "feedFlowRate",
+        vibration_rms AS "vibrationRms",
+        motor_current AS "motorCurrent",
+        power_consumption_kw AS "powerConsumptionKw",
+        temp_setpoint AS "tempSetpoint",
+        pressure_setpoint AS "pressureSetpoint",
+        fault_type AS "faultTypeRaw",
+        efficiency_loss_pct AS "efficiencyLossPct"
+      FROM reactor_readings
+      WHERE reactor_id = $1 AND timestamp >= $2 AND timestamp <= $3
+      ORDER BY timestamp
+    `,
+    [episode.reactorId, from.toISOString(), to.toISOString()],
+  );
+
+  const faultLabel = (value: number) => (value === 0 ? 'Normal' : `F${value}`);
+
+  const points = readingRows.map((row) => ({
+    timestamp: row.timestamp,
+    time: new Date(row.timestamp).toISOString().slice(11, 16),
+    reactorTemp: row.reactorTemp,
+    reactorPressure: row.reactorPressure,
+    feedFlowRate: row.feedFlowRate,
+    vibrationRms: row.vibrationRms,
+    motorCurrent: row.motorCurrent,
+    powerConsumptionKw: row.powerConsumptionKw,
+    tempSetpoint: row.tempSetpoint,
+    pressureSetpoint: row.pressureSetpoint,
+    faultType: faultLabel(row.faultTypeRaw),
+    efficiencyLossPct: row.efficiencyLossPct,
+  }));
+
+  return {
+    reactorId: episode.reactorId,
+    from: from.toISOString(),
+    to: to.toISOString(),
+    faultOnset: faultOnset.toISOString(),
+    detectedAt: detectedAt.toISOString(),
+    axisLabels: points.map((p) => p.time),
+    points,
+  };
+}
+  async getReactorStatus(runId?: string, holdMin = 0, windowHours = 24) {
+    const resolvedRunId = await this.resolveRunId(runId);
+
+    // 이 데이터는 실시간이 아니라 배치 데이터라서 "지금"이 없습니다.
+    // 데이터상 가장 최근 이벤트 시각을 기준점으로 삼아 최근 windowHours 이내 이벤트를 "활성"으로 봅니다.
+    const latestResult = await this.db.query<{ latest: string | null }>(
+      `SELECT MAX(event_time) AS latest FROM fault_events WHERE run_id = $1 AND hold_min = $2`,
+      [resolvedRunId, holdMin],
+    );
+
+    const asOf = latestResult.rows[0]?.latest ?? null;
+    const since = asOf ? new Date(new Date(asOf).getTime() - windowHours * 60 * 60 * 1000).toISOString() : null;
+
+    const { rows } = await this.db.query<{
+      reactorId: string;
+      activeAlertCount: number;
+      lastEventTime: string | null;
+    }>(
+      `
+        WITH reactors AS (
+          SELECT DISTINCT reactor_id
+          FROM monthly_summaries
+          WHERE run_id = $1 AND reactor_id IS NOT NULL
+        ),
+        recent_events AS (
+          SELECT reactor_id, COUNT(*)::int AS alert_count, MAX(event_time) AS last_event_time
+          FROM fault_events
+          WHERE run_id = $1 AND hold_min = $2 AND event_time >= $3
+          GROUP BY reactor_id
+        )
+        SELECT
+          r.reactor_id AS "reactorId",
+          COALESCE(e.alert_count, 0)::int AS "activeAlertCount",
+          e.last_event_time AS "lastEventTime"
+        FROM reactors r
+        LEFT JOIN recent_events e ON e.reactor_id = r.reactor_id
+        ORDER BY r.reactor_id
+      `,
+      [resolvedRunId, holdMin, since],
+    );
+
+    const reactors = rows.map((row) => ({
+      ...row,
+      status: row.activeAlertCount > 0 ? 'CAUTION' : 'OK',
+    }));
+
+    return {
+      asOf,
+      windowHours,
+      reactorCount: reactors.length,
+      reactorsAtRisk: reactors.filter((r) => r.status === 'CAUTION').length,
+      activeAlertCount: reactors.reduce((sum, r) => sum + r.activeAlertCount, 0),
+      reactors,
+    };
   }
 
   private async resolveRunId(runId?: string) {
