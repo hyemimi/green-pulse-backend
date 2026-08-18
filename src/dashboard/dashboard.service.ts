@@ -394,42 +394,8 @@ async getDetections(runId?: string, holdMin = 0) {
     };
   });
 }
-async getEpisodeSensorTrend(episodeId: number, runId?: string, holdMin = 0, bufferMin = 15) {
-  const resolvedRunId = await this.resolveRunId(runId);
-
+private async queryReactorPoints(reactorId: string, from: Date, to: Date) {
   const { rows } = await this.db.query<{
-    reactorId: string;
-    detectedAt: string | null;
-    delayMin: number | null;
-  }>(
-    `
-      SELECT
-        ep.reactor_id AS "reactorId",
-        ev.event_time AS "detectedAt",
-        ep.correct_delay_min AS "delayMin"
-      FROM episode_results ep
-      LEFT JOIN fault_events ev
-        ON ev.run_id = ep.run_id
-        AND ev.hold_min = ep.hold_min
-        AND ev.episode_id = ep.episode_id
-        AND ev.predicted_fault = ep.fault
-      WHERE ep.run_id = $1 AND ep.hold_min = $2 AND ep.episode_id = $3
-      LIMIT 1
-    `,
-    [resolvedRunId, holdMin, episodeId],
-  );
-
-  const episode = rows[0];
-  if (!episode || !episode.detectedAt || episode.delayMin === null) {
-    throw new NotFoundException(`Episode ${episodeId} has no detection data for run ${resolvedRunId}`);
-  }
-
-  const detectedAt = new Date(episode.detectedAt);
-  const faultOnset = new Date(detectedAt.getTime() - episode.delayMin * 60 * 1000);
-  const from = new Date(faultOnset.getTime() - bufferMin * 60 * 1000);
-  const to = new Date(detectedAt.getTime() + bufferMin * 60 * 1000);
-
-  const { rows: readingRows } = await this.db.query<{
     timestamp: string;
     reactorTemp: number | null;
     reactorPressure: number | null;
@@ -459,12 +425,12 @@ async getEpisodeSensorTrend(episodeId: number, runId?: string, holdMin = 0, buff
       WHERE reactor_id = $1 AND timestamp >= $2 AND timestamp <= $3
       ORDER BY timestamp
     `,
-    [episode.reactorId, from.toISOString(), to.toISOString()],
+    [reactorId, from.toISOString(), to.toISOString()],
   );
 
   const faultLabel = (value: number) => (value === 0 ? 'Normal' : `F${value}`);
 
-  const points = readingRows.map((row) => ({
+  return rows.map((row) => ({
     timestamp: row.timestamp,
     time: new Date(row.timestamp).toISOString().slice(11, 16),
     reactorTemp: row.reactorTemp,
@@ -478,6 +444,45 @@ async getEpisodeSensorTrend(episodeId: number, runId?: string, holdMin = 0, buff
     faultType: faultLabel(row.faultTypeRaw),
     efficiencyLossPct: row.efficiencyLossPct,
   }));
+}
+
+async getEpisodeSensorTrend(episodeId: number, runId?: string, holdMin = 0, bufferMin = 15) {
+  const resolvedRunId = await this.resolveRunId(runId);
+
+  const { rows } = await this.db.query<{
+    reactorId: string;
+    detectedAt: string | null;
+    delayMin: number | null;
+  }>(
+    `
+      SELECT
+        ep.reactor_id AS "reactorId",
+        ev.event_time AS "detectedAt",
+        ep.correct_delay_min AS "delayMin"
+      FROM episode_results ep
+      LEFT JOIN fault_events ev
+        ON ev.run_id = ep.run_id
+        AND ev.hold_min = ep.hold_min
+        AND ev.episode_id = ep.episode_id
+        AND ev.predicted_fault = ep.fault
+      WHERE ep.run_id = $1 AND ep.hold_min = $2 AND ep.episode_id = $3
+      ORDER BY ev.event_time
+      LIMIT 1
+    `,
+    [resolvedRunId, holdMin, episodeId],
+  );
+
+  const episode = rows[0];
+  if (!episode || !episode.detectedAt || episode.delayMin === null) {
+    throw new NotFoundException(`Episode ${episodeId} has no detection data for run ${resolvedRunId}`);
+  }
+
+  const detectedAt = new Date(episode.detectedAt);
+  const faultOnset = new Date(detectedAt.getTime() - episode.delayMin * 60 * 1000);
+  const from = new Date(faultOnset.getTime() - bufferMin * 60 * 1000);
+  const to = new Date(detectedAt.getTime() + bufferMin * 60 * 1000);
+
+  const points = await this.queryReactorPoints(episode.reactorId, from, to);
 
   return {
     reactorId: episode.reactorId,
@@ -485,6 +490,51 @@ async getEpisodeSensorTrend(episodeId: number, runId?: string, holdMin = 0, buff
     to: to.toISOString(),
     faultOnset: faultOnset.toISOString(),
     detectedAt: detectedAt.toISOString(),
+    axisLabels: points.map((p) => p.time),
+    points,
+  };
+}
+
+async getReactorSensorTrend(reactorId: string, runId?: string, holdMin = 0, bufferMin = 15) {
+  const resolvedRunId = await this.resolveRunId(runId);
+
+  // 해당 reactor에서 감지된 episode가 있으면 그걸 그대로 재사용
+  const { rows } = await this.db.query<{ episodeId: number }>(
+    `
+      SELECT episode_id AS "episodeId"
+      FROM episode_results
+      WHERE run_id = $1 AND hold_min = $2 AND reactor_id = $3
+      ORDER BY episode_id
+      LIMIT 1
+    `,
+    [resolvedRunId, holdMin, reactorId],
+  );
+
+  if (rows[0]) {
+    return this.getEpisodeSensorTrend(rows[0].episodeId, resolvedRunId, holdMin, bufferMin);
+  }
+
+  // episode가 없는 reactor(A_R1 등)는 fault 하이라이트 없이 최근 구간만 반환
+  const { rows: latestRows } = await this.db.query<{ latest: string | null }>(
+    `SELECT MAX(timestamp) AS latest FROM reactor_readings WHERE reactor_id = $1`,
+    [reactorId],
+  );
+
+  const latest = latestRows[0]?.latest;
+  if (!latest) {
+    throw new NotFoundException(`No readings found for reactor ${reactorId}`);
+  }
+
+  const to = new Date(latest);
+  const from = new Date(to.getTime() - bufferMin * 2 * 60 * 1000);
+  const points = await this.queryReactorPoints(reactorId, from, to);
+
+  return {
+    reactorId,
+    from: from.toISOString(),
+    to: to.toISOString(),
+    faultOnset: null,
+    detectedAt: null,
     axisLabels: points.map((p) => p.time),
     points,
   };
