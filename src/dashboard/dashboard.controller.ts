@@ -329,4 +329,21 @@ getEpisodeSensorTrend(
     Number(bufferMin),
   );
 }
+@Get('reactors/:reactorId/sensor-trend')
+@ApiOperation({ summary: 'Reactor 기준 센서 트렌드 조회 (해당 reactor의 episode 자동 탐색)' })
+@ApiParam({ name: 'reactorId', example: 'A_R2', description: '조회할 reactor ID입니다.' })
+@ApiQuery({ name: 'runId', required: false, description: '조회할 모델 실행 ID. 생략하면 최신 run을 사용합니다.' })
+@ApiQuery({ name: 'holdMin', required: false, example: 0, description: 'thermal arbitration hold 값입니다.' })
+@ApiQuery({ name: 'bufferMin', required: false, example: 15, description: '전조/탐지 시각 앞뒤로 몇 분을 더 보여줄지 설정합니다.' })
+@ApiOkResponse({
+  description: '해당 reactor의 episode 기준 센서 트렌드를 반환합니다. episode가 없으면 최근 데이터 구간을 반환합니다.',
+})
+getReactorSensorTrend(
+  @Param('reactorId') reactorId: string,
+  @Query('runId') runId?: string,
+  @Query('holdMin') holdMin = '0',
+  @Query('bufferMin') bufferMin = '15',
+) {
+  return this.dashboardService.getReactorSensorTrend(reactorId, runId, Number(holdMin), Number(bufferMin));
+}
 }
