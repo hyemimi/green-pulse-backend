@@ -1,5 +1,5 @@
-import { applyDecorators, Controller, Get, Query } from '@nestjs/common';
-import { ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { applyDecorators, Body, Controller, Get, Put, Query } from '@nestjs/common';
+import { ApiBody, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { EsgService } from './esg.service';
 
 @ApiTags('esg')
@@ -118,10 +118,49 @@ export class EsgController {
     return this.esgService.getMonthly({ runId, from, to, reactorId, holdMin: Number(holdMin) });
   }
 
+  @Get('training-estimate')
+  @ApiOperation({ summary: '학습 데이터 실제 이상 구간 기반 ESG 추정값' })
+  @ApiQuery({ name: 'from', required: true, example: '2024-01-01' })
+  @ApiQuery({ name: 'to', required: true, example: '2024-01-31' })
+  @ApiQuery({ name: 'assumedDetectionMin', required: false, example: 15 })
+  getTrainingEstimate(
+    @Query('from') from: string,
+    @Query('to') to: string,
+    @Query('assumedDetectionMin') assumedDetectionMin = '15',
+  ) {
+    return this.esgService.getTrainingEstimate(from, to, Number(assumedDetectionMin));
+  }
+
   @Get('conversion-factors')
   @ApiOperation({ summary: 'ESG 환산계수와 전력 계산 기준 조회' })
   getConversionFactors() {
     return this.esgService.getConversionFactors();
+  }
+
+  @Get('quarter-targets')
+  @ApiOperation({ summary: '연도별 ESG 분기 에너지 절감 목표 조회' })
+  @ApiQuery({ name: 'year', required: true, example: 2024 })
+  getQuarterTargets(@Query('year') year: string) {
+    return this.esgService.getQuarterTargets(Number(year));
+  }
+
+  @Put('quarter-targets')
+  @ApiOperation({ summary: '연도별 ESG 분기 에너지 절감 목표 저장' })
+  @ApiBody({
+    schema: {
+      example: {
+        year: 2024,
+        targets: [
+          { quarter: 1, targetKwh: 600 },
+          { quarter: 2, targetKwh: 700 },
+        ],
+      },
+    },
+  })
+  saveQuarterTargets(
+    @Body() body: { year: number; targets: Array<{ quarter: number; targetKwh: number }> },
+  ) {
+    return this.esgService.saveQuarterTargets(body?.year, body?.targets);
   }
 }
 
